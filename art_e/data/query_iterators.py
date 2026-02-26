@@ -1,10 +1,12 @@
 from art_e.data.types_enron import SyntheticQuery
 from typing import List, Optional
-from datasets import load_dataset, Dataset
+from datasets import load_from_disk, Dataset
+import os
 import random
 
-# Define the Hugging Face repository ID
-HF_REPO_ID = "corbt/enron_emails_sample_questions"
+# Path to local Arrow dataset (relative to this file)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_DATASET_PATH = os.path.join(BASE_DIR, "..", "..", "data", "art_e_vince_kaminski")
 
 # A few spot-checked synthetic queries that we found to be ambiguous or
 # contradicted by other source emails. We'll exclude them for a more accurate
@@ -19,7 +21,8 @@ def load_synthetic_queries(
     shuffle: bool = False,
     exclude_known_bad_queries: bool = True,
 ) -> List[SyntheticQuery]:
-    dataset: Dataset = load_dataset(HF_REPO_ID, split=split)  # type: ignore
+    dataset_dict = load_from_disk(LOCAL_DATASET_PATH)
+    dataset: Dataset = dataset_dict[split]  # type: ignore
 
     if max_messages is not None:
         dataset = dataset.filter(lambda x: len(x["message_ids"]) <= max_messages)
@@ -31,7 +34,6 @@ def load_synthetic_queries(
         dataset = dataset.shuffle()
 
     # Convert each row (dict) in the dataset to a SyntheticQuery object
-    # Apply the limit *after* conversion if specified
     queries = [SyntheticQuery(**row) for row in dataset]  # type: ignore
 
     if max_messages is not None:

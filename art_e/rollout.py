@@ -16,7 +16,6 @@ from art.utils.litellm import convert_litellm_choice_to_openai
 from dataclasses import dataclass
 from art.utils import limit_concurrency
 import os
-from openpipe import AsyncOpenPipe
 from datetime import datetime
 from art_e.project_types import ProjectPolicyConfig
 import textwrap
@@ -26,9 +25,11 @@ litellm.cache = Cache(type=LiteLLMCacheType.DISK)
 # litellm._turn_on_debug()
 
 # Initialize OpenPipe client (ensure OPENPIPE_API_KEY is in your .env)
-if os.getenv("OPENPIPE_API_KEY"):
-    op_client = AsyncOpenPipe()
-else:
+try:
+    from openpipe import AsyncOpenPipe
+
+    op_client = AsyncOpenPipe() if os.getenv("OPENPIPE_API_KEY") else None
+except ImportError:
     op_client = None
 
 """
@@ -171,11 +172,12 @@ async def determine_if_answer_is_correct(answer: str, query: SyntheticQuery) -> 
     ]
 
     response = await acompletion(
-        model="gemini/gemini-2.0-flash",
+        model="gpt-5-mini",
         messages=messages,
-        temperature=0,
         caching=True,
-        max_tokens=2,
+        max_completion_tokens=1024,
+        reasoning_effort="low",
+        drop_params=True,
     )
 
     return response.choices[0].message.content.strip().lower().startswith("t")  # type: ignore
@@ -282,7 +284,7 @@ async def rollout(
             try:
                 tool_args = json.loads(tool_call["arguments"])
                 assert isinstance(tool_args, dict)
-            except Exception as e:
+            except Exception:
                 rubric.bad_tool_call_args = True
                 break
         else:
