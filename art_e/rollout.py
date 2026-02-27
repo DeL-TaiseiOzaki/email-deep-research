@@ -10,10 +10,11 @@ from litellm.caching.caching import LiteLLMCacheType, Cache
 import json
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
-from litellm.types.utils import Choices, ModelResponse, Message
+from litellm.types.utils import Choices, ModelResponse
 from dataclasses import asdict
 from dataclasses import dataclass
 from art.utils import limit_concurrency
+from art.model import TrainableModel  # noqa: F401
 import os
 from datetime import datetime
 from art_e.project_types import ProjectPolicyConfig
@@ -128,12 +129,12 @@ def return_final_answer(answer: str, sources: List[str] | None) -> str:
     ...
 
 
-def tool_response(response: Any, message: Message) -> ChatCompletionMessageParam:
+def tool_response(response: Any, message: Any) -> ChatCompletionMessageParam:
     """Generate a response for a tool call.
 
     Args:
         response: The response from the tool
-        message: The message that's being responded to
+        message: The message that's being responded to (litellm Message or OpenAI ChatCompletionMessage)
 
     Returns:
         A message that can be added to the conversation
@@ -197,6 +198,10 @@ async def rollout(
     )
     assert isinstance(model.config, ProjectPolicyConfig)
 
+    # Use ART's patched OpenAI client for trainable models.
+    # This provides proper Choice objects with logprobs needed for GRPO training.
+    openai_client = model.openai_client() if isinstance(model, TrainableModel) else None
+
     system_prompt = textwrap.dedent(f"""\
         You are an email search agent. You are given a user query and a list of tools you can use to search the user's email. Use the tools to search the user's emails and find the answer to the user's query. You may take up to {model.config.max_turns} turns to find the answer, so if your first seach doesn't find the answer, you can try with different keywords.
 
@@ -208,10 +213,10 @@ async def rollout(
         traj.tools = tools
     else:
         system_prompt += textwrap.dedent(f"""\
-            
+
             Here are the tools you can use:
             {tools}
-            
+
             Respond with a valid JSON object with the following fields:
             - tool_name: (str) the name of the tool to use
             - tool_args: (JSON) the arguments to pass to the tool
@@ -229,7 +234,7 @@ async def rollout(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": scenario.question},
     ]
-    llm_response: ModelResponse | None = None
+    llm_response: Any = None
     final_answer = None
 
     while True:
@@ -239,46 +244,82 @@ async def rollout(
             rubric.ran_out_of_turns = True
             break
 
-        litellm_model_name = model.config.litellm_model_name
-        if litellm_model_name is None:
-            litellm_model_name = f"hosted_vllm/{model.name}"
+        if openai_client is not None:
+            # Trainable model: use ART's patched OpenAI client.
+            # The ART vLLM server always returns logprobs with token IDs.
+            llm_response = await openai_client.chat.completions.create(
+                model=model.name,
+                messages=traj.messages(),
+                max_completion_tokens=model.config.max_tokens,
+                tools=tools if model.config.use_tools else None,
+            )
+            choice = llm_response.choices[0]
+            if llm_response.usage:
+                rubric.prompt_tokens += llm_response.usage.prompt_tokens
+                rubric.completion_tokens += llm_response.usage.completion_tokens
 
-        llm_response = await acompletion(
-            model=litellm_model_name,
-            base_url=model.base_url,
-            messages=traj.messages(),
-            caching=not model.trainable,
-            api_key=model.api_key,
-            max_completion_tokens=model.config.max_tokens,
-            tools=tools if model.config.use_tools else None,
-            tool_choice="required"
-            if model.config.use_tools and not model.trainable
-            else None,
-        )  # type: ignore
+            # Our rollout is only set up to handle one tool call at a time.
+            if (
+                choice.message.tool_calls is not None
+                and len(choice.message.tool_calls) > 1
+            ):
+                choice.message.tool_calls = choice.message.tool_calls[:1]
 
-        assert isinstance(llm_response, ModelResponse)
-        rubric.prompt_tokens += llm_response.usage.prompt_tokens  # type: ignore
-        rubric.completion_tokens += llm_response.usage.completion_tokens  # type: ignore
-        choice = llm_response.choices[0]  # type: ignore
-        assert isinstance(choice, Choices)
+            # Append the full Choice object (not a dict) so ART can extract logprobs for training.
+            traj.messages_and_choices.append(choice)
+        else:
+            # Non-trainable model: use litellm (no logprobs needed).
+            litellm_model_name = model.config.litellm_model_name
+            if litellm_model_name is None:
+                litellm_model_name = f"hosted_vllm/{model.name}"
 
-        # Our rollout is only set up to handle one tool call at a time, so just ignore any parallel tool calls.
-        if choice.message.tool_calls is not None and len(choice.message.tool_calls) > 1:
-            choice.message.tool_calls = choice.message.tool_calls[:1]
-        traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
+            llm_response = await acompletion(
+                model=litellm_model_name,
+                base_url=model.base_url,
+                messages=traj.messages(),
+                caching=not model.trainable,
+                api_key=model.api_key,
+                max_completion_tokens=model.config.max_tokens,
+                tools=tools if model.config.use_tools else None,
+                tool_choice="required"
+                if model.config.use_tools and not model.trainable
+                else None,
+            )  # type: ignore
+
+            assert isinstance(llm_response, ModelResponse)
+            rubric.prompt_tokens += llm_response.usage.prompt_tokens  # type: ignore
+            rubric.completion_tokens += llm_response.usage.completion_tokens  # type: ignore
+            choice = llm_response.choices[0]  # type: ignore
+            assert isinstance(choice, Choices)
+
+            # Our rollout is only set up to handle one tool call at a time.
+            if (
+                choice.message.tool_calls is not None
+                and len(choice.message.tool_calls) > 1
+            ):
+                choice.message.tool_calls = choice.message.tool_calls[:1]
+
+            # Append as dict for non-trainable models (no logprobs needed).
+            traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
 
         if model.config.use_tools:
-            tool_call = (
-                choice.message.tool_calls[0].get("function")
-                if choice.message.tool_calls
-                else None
-            )
-            if tool_call is None:
+            if not choice.message.tool_calls:
                 rubric.bad_tool_call_args = True
                 break
-            tool_name = tool_call["name"]
+            if openai_client is not None:
+                # OpenAI types: attribute access on ChatCompletionMessageToolCall
+                tool_name = choice.message.tool_calls[0].function.name
+                tool_args_raw = choice.message.tool_calls[0].function.arguments
+            else:
+                # litellm types: dict access
+                func = choice.message.tool_calls[0].get("function")
+                if func is None:
+                    rubric.bad_tool_call_args = True
+                    break
+                tool_name = func["name"]
+                tool_args_raw = func["arguments"]
             try:
-                tool_args = json.loads(tool_call["arguments"])
+                tool_args = json.loads(tool_args_raw)
                 assert isinstance(tool_args, dict)
             except Exception:
                 rubric.bad_tool_call_args = True

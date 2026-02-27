@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=26
 #SBATCH --output=logs/train_%j.log
 #SBATCH --error=logs/train_%j.err
+#SBATCH --exclude=megatpa-a3meganodeset-0
 
 set -euo pipefail
 
