@@ -12,7 +12,6 @@ from openai.types.chat.chat_completion_message_param import ChatCompletionMessag
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
 from litellm.types.utils import Choices, ModelResponse, Message
 from dataclasses import asdict
-from art.utils.litellm import convert_litellm_choice_to_openai
 from dataclasses import dataclass
 from art.utils import limit_concurrency
 import os
@@ -266,10 +265,7 @@ async def rollout(
         # Our rollout is only set up to handle one tool call at a time, so just ignore any parallel tool calls.
         if choice.message.tool_calls is not None and len(choice.message.tool_calls) > 1:
             choice.message.tool_calls = choice.message.tool_calls[:1]
-        if model.trainable:
-            traj.messages_and_choices.append(convert_litellm_choice_to_openai(choice))
-        else:
-            traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
+        traj.messages_and_choices.append(choice.message.to_dict())  # type: ignore
 
         if model.config.use_tools:
             tool_call = (

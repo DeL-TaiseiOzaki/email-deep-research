@@ -9,3 +9,8 @@ __pycache__
 plots/
 /data/
 !/art_e/data/
+
+logs/
+
+unsloth_compiled_cache/
+wandb/

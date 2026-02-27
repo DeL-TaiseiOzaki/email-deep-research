@@ -1,6 +1,5 @@
 import art
 import asyncio
-import os
 from dotenv import load_dotenv
 from typing import List
 from art_e.rollout import rollout
@@ -56,7 +55,7 @@ async def run_training(model: art.TrainableModel):
     # Step 4: Training loop (GRPO)
     train_iterator = iterate_dataset(
         train_scenarios,
-        groups_per_step=model.config.training_config.groups_per_step,
+        batch_size=model.config.training_config.groups_per_step,
         num_epochs=model.config.training_config.num_epochs,
         initial_step=await model.get_step(),
     )

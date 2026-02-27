@@ -1,12 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=art-e-train
-#SBATCH --partition=gpu
+#SBATCH --job-name=qwen-14-art-e
+#SBATCH --partition=a3megatpa
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=26
 #SBATCH --output=logs/train_%j.log
 #SBATCH --error=logs/train_%j.err
 
@@ -23,12 +21,20 @@ echo "=========================================="
 # Navigate to project root
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 
-# Load environment variables
+# Load environment variables from .env
 if [ -f .env ]; then
     set -a
     source .env
     set +a
 fi
+
+# Activate venv (loads W&B env vars from activate script)
+source .venv/bin/activate
+
+# W&B configuration (explicit export to ensure uv run inherits them)
+export WANDB_API_KEY="${WANDB_API_KEY}"
+export WANDB_ENTITY="${WANDB_ENTITY:-pjt-toe}"
+export WANDB_PROJECT="art-e-email-agent"
 
 # Ensure logs directory exists
 mkdir -p logs
@@ -40,17 +46,10 @@ if ! command -v uv &> /dev/null; then
     source "$HOME/.local/bin/env"
 fi
 
-# Sync dependencies
-echo "Syncing dependencies..."
-uv sync
-
-# W&B configuration
-export WANDB_PROJECT="art-e-email-agent"
-
 # Pre-flight checks
 echo "Pre-flight checks..."
 nvidia-smi
-uv run python -c "import art; print(f'openpipe-art OK')"
+uv run python -c "import art; print('openpipe-art OK')"
 uv run python -c "from art_e.data.query_iterators import load_synthetic_queries; q = load_synthetic_queries(split='train', limit=1); print(f'Dataset OK: {len(q)} query loaded')"
 
 # Step 1: Generate SQLite DB (idempotent, skips if exists)
