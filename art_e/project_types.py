@@ -9,6 +9,8 @@ class TrainingConfig(BaseModel):
     val_set_size: int = 100
     training_dataset_size: int = 4000
     num_epochs: int = 4
+    keep_top_k: int = 3
+    max_steps: int | None = None
 
 
 class ProjectPolicyConfig(BaseModel):
@@ -17,5 +19,6 @@ class ProjectPolicyConfig(BaseModel):
     log_to_openpipe: bool = False
     litellm_model_name: str | None = None
     use_tools: bool = True
+    enable_thinking: bool = False
 
     training_config: TrainingConfig | None = None

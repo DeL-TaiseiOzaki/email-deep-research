@@ -82,9 +82,11 @@
       "Bash(fi)",
       "Bash(done)",
       "Bash(true)",
-      "Bash(sinfo -N -l)",
-      "Bash(sinfo)",
-      "Bash(sbatch scripts/train_slurm.sh)"
+      "Bash(squeue -j 3753)",
+      "Bash(sacct -j 3753 --format=JobID,State,ExitCode,DerivedExitCode,Reason,Timelimit,Elapsed,MaxRSS,MaxVMSize)",
+      "Bash(.venv/bin/python -c \"from art.dev.openai_server import OpenAIServerConfig; help\\(OpenAIServerConfig\\)\")",
+      "Bash(.venv/bin/python -c \":*)",
+      "Bash(.venv/bin/python -c \"import ast; ast.parse\\(open\\(''/home/usr_ext_taisei_ozaki_ccoe_toyota/email-deep-research/art_e/train.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
     ],
     "deny": [
       "Read(./.env)",

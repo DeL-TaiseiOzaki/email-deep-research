@@ -1,4 +1,5 @@
 import art
+import re
 from typing import List, Any
 from art_e.data.types_enron import SyntheticQuery
 from art import Trajectory
@@ -31,6 +32,12 @@ try:
     op_client = AsyncOpenPipe() if os.getenv("OPENPIPE_API_KEY") else None
 except ImportError:
     op_client = None
+
+
+def strip_thinking_tags(content: str) -> str:
+    """Remove <think>...</think> blocks from model output."""
+    return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
 
 """
 Steps for implementing the rollout function:
@@ -74,7 +81,10 @@ def reward_and_metrics(
     partial_rewards = 0
     partial_rewards += 0.1 if rubric.ever_found_right_email else 0
     partial_rewards += 0.1 if rubric.ever_read_right_email else 0
-    partial_rewards += 0.1 if not rubric.ever_tried_to_read_invalid_email else 0
+    # Only penalize invalid reads when the model actually attempted to read emails.
+    # Previously, not reading any email at all gave a free +0.1 bonus.
+    if rubric.ever_read_right_email or rubric.ever_tried_to_read_invalid_email:
+        partial_rewards += 0.1 if not rubric.ever_tried_to_read_invalid_email else 0
     partial_rewards += 0.1 if rubric.sources_correct else 0
 
     # Formatting error: reward will be -2 to -1
@@ -248,7 +258,7 @@ async def rollout(
             # Trainable model: use ART's patched OpenAI client.
             # The ART vLLM server always returns logprobs with token IDs.
             llm_response = await openai_client.chat.completions.create(
-                model=model.name,
+                model=model.get_inference_name(),
                 messages=traj.messages(),
                 max_completion_tokens=model.config.max_tokens,
                 tools=tools if model.config.use_tools else None,
@@ -266,6 +276,10 @@ async def rollout(
                 choice.message.tool_calls = choice.message.tool_calls[:1]
 
             # Append the full Choice object (not a dict) so ART can extract logprobs for training.
+            # Ensure content is never None (tool call messages may omit content),
+            # as Qwen's chat template cannot concatenate str with NoneType.
+            if choice.message.content is None:
+                choice.message.content = ""
             traj.messages_and_choices.append(choice)
         else:
             # Non-trainable model: use litellm (no logprobs needed).
@@ -277,11 +291,16 @@ async def rollout(
                 model=litellm_model_name,
                 base_url=model.base_url,
                 messages=traj.messages(),
-                caching=not model.trainable,
+                caching=False,
                 api_key=model.api_key,
                 max_completion_tokens=model.config.max_tokens,
                 tools=tools if model.config.use_tools else None,
-                tool_choice="required"
+                tool_choice=(
+                    "auto"
+                    if litellm_model_name
+                    and litellm_model_name.startswith("hosted_vllm")
+                    else "required"
+                )
                 if model.config.use_tools and not model.trainable
                 else None,
             )  # type: ignore
@@ -326,7 +345,9 @@ async def rollout(
                 break
         else:
             raw_content = choice.message.content
-            if raw_content is None:
+            if raw_content is not None:
+                raw_content = strip_thinking_tags(raw_content)
+            if raw_content is None or raw_content == "":
                 rubric.cant_parse_tool_call = True
                 break
             start_index = raw_content.find("{")
@@ -398,6 +419,8 @@ async def rollout(
                 ):
                     rubric.bad_tool_call_args = True
                     break
+
+                rubric.num_sources = len(final_sources)
 
                 if final_answer == "I don't know":
                     rubric.returned_i_dont_know = True
